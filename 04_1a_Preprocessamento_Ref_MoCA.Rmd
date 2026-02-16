@@ -1,0 +1,141 @@
+---
+title: "Fase 4.1a: Pre-processamento reference MoCA"
+author: "Giacomo Pensiero"
+date: "2025-10-24"
+output: html_document
+---
+
+```{r setup1, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(123)
+```
+
+```{r library, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+library(Seurat)         
+library(data.table)     
+library(Matrix)         
+library(dplyr)    
+library(readxl)       
+```
+
+```{r setup2, echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+base_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1"
+reference_path <- file.path(base_path, "Dati_Input/Reference/")
+reference_raw_path <- file.path(reference_path, "Reference_raw/")
+reference_inter_path <- file.path(reference_path, "intermediate/")
+cell_annot_file <- file.path(reference_raw_path, "GSE119945_cell_annotate.csv.gz")
+gene_annot_file <- file.path(reference_raw_path, "GSE119945_gene_annotate.csv.gz")
+gene_count_file <- file.path(reference_raw_path, "GSE119945_gene_count.txt.gz")
+sup_file <- file.path(reference_raw_path, "MOCA_SupplementaryTables.xlsx")
+```
+
+## Caricamento dei dati grezzi MOCA 
+
+Lettura dei file originali del dataset MOCA (annotazioni delle cellule, annotazioni dei geni e matrice di espressione).  
+Assegnazione degli ID corretti a geni e cellule e controllo che le dimensioni e gli identificativi siano coerenti tra le tabelle.
+
+```{r load_raw, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+cell_annot <- fread(cell_annot_file)
+gene_annot <- fread(gene_annot_file)
+expr <- readMM(gzfile(gene_count_file))
+expr <- as(expr, "CsparseMatrix")
+cell_annot$id <- as.character(cell_annot$id)
+rownames(expr) <- gene_annot$gene_id
+colnames(expr) <- as.character(cell_annot$id)
+ncol(expr) == nrow(cell_annot)
+all.equal(colnames(expr), as.character(cell_annot$id))
+```
+
+## Integrazione delle annotazioni da Table S3  
+Lettura della tabella Supplementary Table S3 del dataset MOCA contenente i tipi cellulari e i relativi marker.  
+Unione di queste informazioni al file di annotazione delle cellule tramite la colonna `Main_Cluster` e rimozione delle celle prive di etichetta valida.
+
+```{r load_tabella, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+cluster_labels <- read_excel(sup_file, sheet = "Table S3", skip = 1)
+colnames(cluster_labels)[1:5] <- c("Main_Cluster", "Cell_type", "Cell_number", "Marker_genes", "Reference")
+cluster_labels <- cluster_labels[, c("Main_Cluster", "Cell_type", "Cell_number", "Marker_genes")]
+cell_annot$Main_Cluster <- as.character(cell_annot$Main_Cluster)
+cluster_labels$Main_Cluster <- as.character(cluster_labels$Main_Cluster)
+cell_annot <- left_join(cell_annot,cluster_labels[,c("Main_Cluster", "Cell_type", "Cell_number", "Marker_genes")],by = "Main_Cluster")
+cell_annot_ref <- dplyr::filter(cell_annot, !is.na(Cell_type))
+```
+
+```{r salvataggio_1, echo=TRUE, eval=FALSE, warning=FALSE, message=FALSE}
+saveRDS(cell_annot, file.path(reference_inter_path, "cell_annot_complete01.rds"))
+saveRDS(cell_annot_ref, file.path(reference_inter_path, "cell_reference_annotated.rds"))
+```
+
+## Selezione delle cellule ossee e creazione dell’oggetto Seurat  
+Filtraggio del dataset MOCA per mantenere solo le cellule appartenenti ai tipi ossei e cartilaginei definiti in `bone_types`.  
+Creazione della matrice di espressione ridotta (`expr_bone`) e del relativo metadato (`meta_bone`), con ridenominazione coerente di geni e cellule.  
+
+```{r subset, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+cell_annot$Cell_type <- gsub("Chondroctye progenitors", "Chondrocyte progenitors", cell_annot$Cell_type)
+bone_types <- c(
+  "Connective tissue progenitors",
+  "Chondrocyte progenitors",
+  "Chondrocytes & osteoblasts",
+  "Osteoblasts"
+)
+
+keep_idx  <- which(cell_annot$Cell_type %in% bone_types)
+expr_bone <- expr[, keep_idx, drop = FALSE]
+meta_bone <- cell_annot[keep_idx, , drop = FALSE]
+meta_bone <- as.data.frame(meta_bone, stringsAsFactors = FALSE)
+colnames(expr_bone) <- make.unique(as.character(colnames(expr_bone)))
+rownames(meta_bone) <- colnames(expr_bone)
+rownames(expr_bone) <- make.unique(rownames(expr_bone))
+```
+
+Lettura della *Table S1* per mappare gli ID dei geni ai simboli, rimozione dei geni duplicati o non validi e costruzione dell’oggetto **Seurat** `ref`.
+
+```{r simboli_geni, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+table_s1 <- read_excel(
+  sup_file,
+  sheet = "Table S1",
+  skip = 1,
+  col_types = "text"
+) |>
+  dplyr::select(gene_id, gene_short_name)
+gene_map <- setNames(table_s1$gene_short_name, table_s1$gene_id)
+expr_symbols <- gene_map[rownames(expr_bone)]
+valid_genes <- !is.na(expr_symbols) & !duplicated(expr_symbols)
+expr_bone <- expr_bone[valid_genes, , drop = FALSE]
+rownames(expr_bone) <- expr_symbols[valid_genes]
+rownames(meta_bone) <- make.unique(as.character(meta_bone$id))
+colnames(expr_bone) <- make.unique(as.character(colnames(expr_bone)))
+idx <- match(colnames(expr_bone), rownames(meta_bone))
+meta_bone <- meta_bone[idx, , drop = FALSE]
+ref <- CreateSeuratObject(counts = expr_bone, meta.data = meta_bone)
+table(ref$Cell_type) 
+```
+
+```{r salvataggio_3, echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+saveRDS(meta_bone, file.path(reference_inter_path, "meta_bone.rds"))
+saveRDS(ref, file.path (reference_inter_path, "moca_ref_bone_seurat.rds"))
+```
+
+## Preprocessing del reference  
+Normalizzazione dei dati, identificazione delle feature variabili, scaling e PCA.
+
+```{r preprocessing_ref, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+ref <- NormalizeData(ref)
+ref <- FindVariableFeatures(ref, nfeatures = 3000)
+ref <- ScaleData(ref, features = VariableFeatures(ref))
+ref <- RunPCA(ref, npcs = 50)
+ref <- FindNeighbors(ref, dims = 1:50, reduction = "pca")
+ref <- FindClusters(ref, resolution = 0.5)
+ref <- RunUMAP(ref, dims = 1:50, reduction = "pca")
+```
+
+L'oggetto ref è stato salvato,per poi effettuare l'annotazione mediante Single R e label transfer.
+
+```{r salvataggio_4, echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+saveRDS(ref, file.path(reference_inter_path, "moca_ref_process.rds"))
+```
+
+```{r session-info, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
+
+
