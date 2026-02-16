@@ -1,0 +1,219 @@
+---
+title: "Plots_Cluster_8"
+author: "Giacomo Pensiero"
+date: "2025-11-30"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r librerie, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(magrittr)
+library(WGCNA)
+library(hdWGCNA)
+library(igraph)
+library(magick)
+library(cowplot)
+theme_set(theme_cowplot())
+set.seed(1234)
+```
+
+```{r setup2,  eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+base_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1/Analisi_Giacomo"
+results_hdwgcna <- file.path(base_path, "results/hdwgcna/cluster_8")
+hdwgcna_path <- file.path(base_path, "intermediate/hdwgcna/cluster_8" )
+grafici_path <- file.path(base_path, "grafici/hdwgcna/cluster_8")
+bone_multi_path<- file.path(base_path, "intermediate/hdwgcna/preprocessing")
+cluster_8 <- readRDS(file.path(hdwgcna_path, "C8_hdwgcna_WT_object.rds"))
+bone_multi <- readRDS(file.path(bone_multi_path, "bone_multi_preprocessed.rds"))
+DMEs <- readRDS(file.path(hdwgcna_path, "C8_DME_results.rds"))
+scores_C8 <- readRDS(file.path(hdwgcna_path, "C8_module_scores_WT.rds"))
+```
+
+```{r underscore, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+score_cols <- colnames(scores_C8)
+for (col in score_cols) {
+  cluster_8[[col]] <- NA
+}
+common_cells <- intersect(rownames(cluster_8@meta.data), rownames(scores_C8))
+cluster_8@meta.data[common_cells, score_cols] <- 
+  scores_C8[common_cells, , drop = FALSE]
+```
+
+```{r network_plot, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+ModuleNetworkPlot(
+  cluster_8,
+  wgcna_name = "WT",
+  outdir = grafici_path)
+```
+
+```{r png, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+pdf_files <- list.files(grafici_path, pattern = "\\.pdf$", full.names = TRUE)
+
+for (f in pdf_files) {
+  
+  message("Converto: ", basename(f))
+  
+  img <- image_read_pdf(f, density = 600) |>    
+    image_trim() |>                              
+    image_resize("1200x1200")                   
+  
+  out <- sub("\\.pdf$", ".png", f)
+  
+  image_write(img, path = out, format = "png")
+}
+```
+
+
+```{r cluster, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+Idents(bone_multi) <- "clusters_res_0_10"
+p_all <- DimPlot(
+  bone_multi,
+  group.by = "clusters_res_0_10",
+  label    = TRUE,
+  repel    = TRUE
+)
+
+bone_multi_c8 <- subset(bone_multi, subset = clusters_res_0_10 == "8")
+
+p_c8 <- DimPlot(
+  bone_multi,
+  cells.highlight = colnames(bone_multi)[bone_multi$clusters_res_0_10 == "8"],
+  cols            = "grey80",   
+  cols.highlight  = "red",      
+  pt.size         = 0.1,        
+  sizes.highlight = 0.5           
+) + theme(legend.position = "none") 
+p_all | p_c8
+```
+
+```{r Tbx1_modulo, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+wgcna_genes <- cluster_8@misc$WT$wgcna_genes
+mods <- cluster_8@misc$WT$wgcna_modules
+
+idx_tbx1 <- which(wgcna_genes == "Tbx1")
+
+tbx1_mod <- NULL
+if (length(idx_tbx1) > 0) {
+  tbx1_mod_raw <- mods$module[idx_tbx1]
+  tbx1_mod <- if (is.numeric(tbx1_mod_raw)) paste0("C8_M", tbx1_mod_raw) else tbx1_mod_raw
+
+  cat("\n**Tbx1 modulo:", tbx1_mod, "**\n")
+}
+```
+
+
+```{r plot, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+score_cols <- colnames(scores_C8)
+for (col in setdiff(score_cols, colnames(bone_multi@meta.data))) {
+  bone_multi[[col]] <- NA_real_
+}
+
+common_cells <- intersect(colnames(bone_multi), rownames(scores_C8))
+bone_multi@meta.data[common_cells, score_cols] <- scores_C8[common_cells, , drop = FALSE]
+
+plot_module_panel <- function(module_id,
+                              grafici_path,
+                              seu_umap,
+                              seu_vln,
+                              condition_col = "condition") {
+  
+ 
+   png_file <- file.path(grafici_path, paste0(module_id, ".png"))
+  net_img  <- magick::image_read(png_file)
+
+  p_net <- cowplot::ggdraw() +
+    cowplot::draw_image(net_img, scale = 1.4) +   
+    theme_void()
+  
+  
+  p_umap <- FeaturePlot(
+  seu_umap,
+  features  = module_id,
+  reduction = "umap",
+  split.by  = condition_col,
+  pt.size   = 0.2,
+  order     = TRUE,       
+  combine   = TRUE,       
+  keep.scale = "feature"  
+) +
+  theme(
+    legend.position = "right",
+    plot.title      = element_text(size = 10, hjust = 0.5),
+    axis.title      = element_blank()
+  )
+  
+  
+  p_vln <- VlnPlot(
+  seu_vln,
+  features = module_id,
+  group.by = condition_col,
+  pt.size  = 0
+) +
+  labs(y = "Module score", x = "Genotype") +
+  scale_fill_manual(values = c(WT = "#33B8C4", MUT = "#E88383")) +
+  scale_color_manual(values = c(WT = "#33B8C4", MUT = "#E88383")) +
+  theme(
+    plot.title      = element_blank(),
+    legend.position = "none",
+    axis.title      = element_text(size = 10),
+    axis.text       = element_text(size = 10)
+  )
+  
+  
+  final <- ((p_net | p_umap) / p_vln) +
+  patchwork::plot_layout(heights = c(1, 1), guides = "keep")
+
+list(
+  net   = p_net,
+  umap  = p_umap,
+  vln   = p_vln,
+  final = final
+)
+
+}
+```
+
+```{r cluster8_panels, echo=TRUE,eval=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6, results='asis'}
+bone_multi_c8 <- subset(bone_multi, subset = clusters_res_0_10 == "8")
+bone_multi$condition    <- factor(bone_multi$condition,    levels = c("WT", "MUT"))
+bone_multi_c8$condition <- factor(bone_multi_c8$condition, levels = c("WT", "MUT"))
+
+for (mod_id in score_cols) {
+  cat("## Modulo ", mod_id, "\n\n")
+  
+  p <- plot_module_panel(
+    module_id     = mod_id,
+    grafici_path  = grafici_path,
+     seu_umap      = bone_multi,       
+    seu_vln       = bone_multi_c8, 
+    condition_col = "condition"
+  )
+  print(p)
+  
+  cat("\n\n")
+  
+ dme_mod <- DMEs[DMEs$module == mod_id, ]
+  
+  if (nrow(dme_mod) == 1) {
+    print(           
+      knitr::kable(dme_mod, digits = 4)
+    )
+  }
+  
+  cat("\n\n---\n\n")
+}
+```
+
+```{r session-info, echo=TRUE}
+sessionInfo()
+```
+
+
+
