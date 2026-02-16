@@ -1,0 +1,263 @@
+---
+title: "Fase 4: Interpretazione biologica (Annotazione Cluster)"
+author: "Giacomo Pensiero"
+date: "2025-10-25"
+output: html_document
+---
+
+In questo script viene eseguita una parte della Fase 4 dell’analisi, dedicata all’*interpretazione biologica* dei cluster ottenuti nella fase 3. Viene caricato l’oggetto *bone_multi*. 
+L’annotazione viene effettuata con un approccio combinato: in una prima fase viene valutata l’espressione di *marker* canonici riportati nello studio di riferimento (Eom et al., 2024) e i cluster vengono rinominati assegnando una prima etichetta biologica (*Manual_label*). In parallelo, vengono applicati metodi di annotazione automatica come supporto e controllo di coerenza (*SingleR* a livello di singolo nucleo e di cluster, e *label transfer* di Seurat) utilizzando un dataset di riferimento **MoCA reference** (Cao et al., 2019). L’annotazione è stata finalizzata utilizzando i *top 30 marker* per ciascun cluster e confrontandoli con la letteratura.
+
+```{r setup1, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(123)
+```
+
+```{r setup, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(future)
+plan("multicore", workers = 16)
+options(future.globals.maxSize = 64 * 1024^3)
+library(SingleR)
+library(SummarizedExperiment)
+library(SingleCellExperiment)
+library(scater)
+library(Matrix)
+library(data.table)
+library(dplyr)
+library(Seurat)
+```
+
+```{r path, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+base_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1/Analisi_Giacomo"
+bone_multi_path <- file.path(base_path, "intermediate/clustering")
+annotazione_path      <- file.path(base_path, "intermediate/annotazione")
+results_annotazione_path <- file.path(base_path, "results/annotazione")
+plots_path <- file.path(base_path, "grafici/grafici_annotazione")
+reference_inter_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1/Dati_Input/Reference/intermediate"
+bone_multi <- readRDS(file.path(bone_multi_path, "bone_multi_postclustering.rds"))
+```
+
+## Espressione dei marker noti dall’articolo
+Per effettuare una prima annotazione dei cluster, è stata visualizzata l’espressione di *marker* canonici riportati nello studio di riferimento (Eom et al., 2024): *Col3a1*, *Vcan* e *Gpc3* (tessuto connettivo); *Sox9*, *Col2a1*, *Acan* e *Mmp13* (condrociti); *Sp7*, *Alpl* e *Dmp1* (linea osteoblastica/osteocitaria); *Acp5* e *Ctsk* (osteoclasti).
+
+```{r vlnplot-article-markers, echo=TRUE, message=FALSE, eval=TRUE, warning=FALSE, fig.width=10, fig.height=8}
+Idents(bone_multi) <- factor(
+  bone_multi$clusters_res_0_10,
+  levels = as.character(sort(as.numeric(unique(as.character(bone_multi$clusters_res_0_10)))))
+)
+p_vln_article <- VlnPlot(bone_multi, features = c("Col3a1", "Vcan", "Gpc3", "Sox9", "Col2a1", "Acan", "Mmp13", "Sp7", "Alpl", "Dmp1", "Acp5", "Ctsk"), pt.size = 0, stack = TRUE, flip = TRUE) + ggtitle("Espressione marker noti dei diversi tipi cellulari")
+p_vln_article
+```
+
+```{r rename-clusters, echo=TRUE, message=FALSE, eval=TRUE, warning=FALSE}
+Idents(bone_multi) <- "clusters_res_0_10"
+bone_multi <- RenameIdents(
+  bone_multi,
+  '0'  = 'Osteoblast',
+  '1'  = 'Matured Chondrocyte',
+  '17' = 'Matured Osteoblast / Osteocyte',
+  '8'  = 'Hypertrophic Chondrocyte / Osteoblast',
+  '4'  = 'Osteoclast',
+  '11'  = 'Connective Tissue',
+  '13' = 'Chondrocyte Progenitor'
+)
+bone_multi$Manual_label <- Idents(bone_multi)
+```
+
+```{r umap-renamed-clusters, echo=TRUE, message=FALSE, eval=TRUE, warning=FALSE, fig.width=10, fig.height=8}
+p_umap_renamed <- DimPlot(
+  bone_multi,
+  reduction = "umap",
+  label = TRUE,
+  repel = TRUE,
+  pt.size = 0.3,
+  label.size = 4
+) + ggtitle("Cluster annotati da marker noti")
+p_umap_renamed
+```
+
+```{r save-final, eval=TRUE}
+saveRDS(bone_multi, file = file.path(annotazione_path, "bone_multi_annotated.rds"))
+write.csv(markers_res01, file = file.path(results_annotazione_path, "markers_res0.1_annotated.csv"), row.names = FALSE)
+```
+
+## Annotazione con Single R e Label Transfer 
+
+In questa sezione viene effettuata l’annotazione dei tipi cellulari mediante *SingleR* (a livello di singolo nucleo e di cluster) e tramite *label transfer* di Seurat, utilizzando come dataset di riferimento il **MoCA reference** (Cao et al., 2019).
+
+```{r caricamento_ref, echo=TRUE, eval=TRUE}
+ref <- readRDS(file.path(reference_inter_path, "moca_ref_process.rds"))
+```
+
+### SingleR a livello di singolo nucleo
+
+```{r annotazione, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+bone_multi <- JoinLayers(bone_multi)
+ref <- JoinLayers(ref)
+sce_ref_bone <- as.SingleCellExperiment(ref)
+query_sce <- as.SingleCellExperiment(bone_multi)
+common_genes <- intersect(rownames(sce_ref_bone), rownames(query_sce))
+sce_ref_bone <- sce_ref_bone[common_genes, ]
+query_sce <- query_sce[common_genes, ]
+pred <- SingleR(test = query_sce, ref = sce_ref_bone, labels = sce_ref_bone$Cell_type)
+table(pred$labels)[1:4]
+bone_multi$SingleR_cell <- pred$pruned.labels
+bone_multi$SingleR_cell_raw  <- pred$labels
+```
+
+```{r save_pred, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+saveRDS(pred$scores, file = file.path(results_annotazione_path, "SingleR_cell_scores.rds"))
+saveRDS(pred, file = file.path(results_annotazione_path, "bone_multi_SingleR_cell.rds"))
+saveRDS( bone_multi, file = file.path(annotazione_path, "bone_multi_with_SingleR_cell_labels.rds"))
+saveRDS(sce_ref_bone, file = file.path(annotazione_path, "sce_ref_bone_SingleR_cell.rds"))
+```
+
+```{r allineamento, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+celle_comuni <- intersect(colnames(query_sce), colnames(bone_multi))
+query_sce <- query_sce[, celle_comuni, drop = FALSE]
+assegnazione_cluster <- setNames(as.character(bone_multi$clusters_res_0_10[celle_comuni]), celle_comuni)
+```
+
+### SingleR a livello di cluster
+
+```{r singleR_cluster_annotation, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+cl_pred <- SingleR(
+  test     = query_sce,
+  ref      = sce_ref_bone,
+  labels   = sce_ref_bone$Cell_type,
+  clusters = assegnazione_cluster
+)
+```
+
+```{r label_cluster, echo=TRUE, eval=TRUE, message=FALSE}
+singleR_labels_by_cluster <- setNames(as.character(cl_pred$pruned.labels), rownames(cl_pred))
+cluster_ids <- as.character(bone_multi$clusters_res_0_10)
+singleR_labels_for_cells <- unname(singleR_labels_by_cluster[cluster_ids])
+names(singleR_labels_for_cells) <- colnames(bone_multi)
+bone_multi <- AddMetaData(
+  bone_multi,
+  metadata = singleR_labels_for_cells,
+  col.name = "SingleR_res0_10_cluster"
+)
+```
+
+```{r salvataggio_cluster, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+saveRDS(cl_pred, file = file.path(results_annotazione_path, "bone_multi_SingleR_cluster.rds"))
+saveRDS(bone_multi, file = file.path(annotazione_path, "bone_multi_with_SingleR_cluster_labels.rds"))
+saveRDS(cl_pred$scores, file = file.path(results_annotazione_path, "SingleR_cluster_scores.rds"))
+```
+
+### Label transfer con Seurat
+
+```{r seurat-label-transfer, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+anchors <- FindTransferAnchors(reference = ref, query = bone_multi, normalization.method = "LogNormalize", dims = 1:50, reference.reduction = "pca")
+predictions <- TransferData(anchorset = anchors, refdata = ref$Cell_type, dims = 1:50)
+```
+
+```{r label, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+bone_multi <- AddMetaData(bone_multi, metadata = predictions)
+bone_multi$SeuratTransfer_label <- bone_multi$predicted.id
+bone_multi$SeuratTransfer_score <- bone_multi$prediction.score.max
+table(bone_multi$SeuratTransfer_label) [1:4]
+```
+
+
+```{r salvataggi, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+saveRDS(bone_multi, file = file.path(annotazione_path, "bone_multi_with_SeuratTransfer_label.rds"))
+saveRDS(predictions, file = file.path(results_annotazione_path, "bone_multi_SeuratTransfer_pred.rds"))
+```
+
+### Annotazione finale 
+
+```{r annotazione_finale, echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+final_map <- c(
+  "0"  = "Osteoblasti",
+  "1"  = "Neuroni sensoriali craniali",
+  "2"  = "Condrociti",
+  "3"  = "Osteoclasti",
+  "4"  = "Fibroblasti stromali",
+  "5"  = "Cellule endoteliali",
+  "6"  = "Epitelio secretorio/di trasporto",
+  "7"  = "Cellule di Schwann",
+  "8"  = "Epitelio sensoriale dell’orecchio interno",
+  "9"  = "Cellule osteogeniche proliferanti",
+  "10" = "Epitelio cocleare specializzato/non-sensoriale",
+  "11" = "Neuroni maturi",
+  "12" = "Epitelio non-sensoriale dell’orecchio interno",
+  "13" = "Cellule epiteliali non sensoriali del dotto cocleare",
+  "14" = "Cellule murali vascolari",
+  "15" = "Melanociti",
+  "16" = "Cellule ciliate esterne della coclea",
+  "17" = "Cellule eritroidi",
+  "18" = "Cellule epiteliali mucose non sensoriali",
+  "19" = "Adipociti")
+
+bone_multi$Final_label_C <- paste0(
+  "C", bone_multi$clusters_res_0_10, ": ",
+  unname(final_map[as.character(bone_multi$clusters_res_0_10)]))
+
+levels_C <- paste0("C", names(final_map), ": ", unname(final_map))
+bone_multi$Final_label_C <- factor(bone_multi$Final_label_C, levels = levels_C)
+
+Idents(bone_multi) <- "Final_label_C"
+n <- nlevels(Idents(bone_multi))
+cols_use <- Seurat::DiscretePalette(n = n, palette = "stepped")
+
+p_umap_final <- DimPlot(
+  bone_multi,
+  reduction = "umap",
+  group.by = "Final_label_C",
+  label = FALSE,
+  pt.size = 0.3,
+  cols = cols_use
+) + ggtitle("Annotazione Finale") +
+  guides(color = guide_legend(title = NULL))
+
+p_umap_final <- p_umap_final +
+  guides(color = guide_legend(
+    title = NULL,
+    override.aes = list(size = 2, alpha = 1)   
+  )) +
+  theme(
+    legend.text = element_text(size = 7),
+    legend.key.size = unit(0.35, "cm"),       
+    legend.spacing.y = unit(0.08, "cm"))
+
+p_umap_final <- p_umap_final +
+  xlab("UMAP_1") +
+  ylab("UMAP_2")
+
+print(p_umap_final)
+```
+
+Al termine di questa fase, l’oggetto annotato *bone_multi* è stato salvato in formato *RDS* come `bone_multi_annotato.rds`.
+
+```{r salvataggio_finale, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+saveRDS(
+  bone_multi,
+  file = file.path(results_annotazione_path, "bone_multi_annotato_res0.10.rds"))
+ggsave(
+  filename = file.path(plots_path, "UMAP_AnnotazioneFinale_res0.10_stepped.pdf"),
+  plot = p_umap_final,
+  width = 6, height = 5, units = "cm",
+  bg = "white")
+
+ggsave(
+  filename = file.path(plots_path, "UMAP_AnnotazioneFinale_res0.10_stepped.png"),
+  plot = p_umap_final,
+  width = 6, height = 5, units = "cm",
+  dpi = 300,
+  bg = "white")
+```
+
+```{r session-info, echo=TRUE}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
