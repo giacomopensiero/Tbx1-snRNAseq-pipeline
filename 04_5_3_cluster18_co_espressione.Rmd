@@ -208,7 +208,7 @@ DMEs$module     <- gsub("-", "_", DMEs$module)
 
 Al termine dell’analisi di co-espressione nel **cluster 18**, l’oggetto finale *cluster_18* è stato salvato in formato *RDS* come `C18_hdwgcna_WT_object.rds`. Sono stati inoltre salvati i risultati dei moduli differenzialmente espressi tra *WT* e *MUT* (`C18_DME_results.rds/.csv`), la lista degli *hub genes* (`C18_hub_genes_WT.rds/.csv`) e gli score dei moduli (`C18_module_scores_WT.rds/.csv`).
 
-```{r salvatagggio_finale, eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+```{r salvatagggio_finale, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
 saveRDS(cluster_18, file = file.path(hdwgcna_path, "C18_hdwgcna_WT_object.rds"))
 
 saveRDS(DMEs, file = file.path(hdwgcna_path, "C18_DME_results.rds"))
