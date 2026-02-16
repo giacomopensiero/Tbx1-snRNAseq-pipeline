@@ -1,5 +1,5 @@
 ---
-title: "Fase 3"
+title: "Fase 3: Analisi (Clustering e Marker cellulari"
 author: "Giacomo Pensiero"
 date: "2025-10-30"
 output: html_document
@@ -71,7 +71,7 @@ for (r in resolutions) {
 }
 ```
 
-```{r find-marker-step1, echo=TRUE, message=FALSE, eval=FALSE, warning=FALSE}
+```{r find-marker-step1, echo=TRUE, message=FALSE, eval=TRUE, warning=FALSE}
 DefaultAssay(bone_multi) <- "RNA"
 Idents(bone_multi) <- bone_multi$clusters_res_0_10
 bone_multi <- JoinLayers(bone_multi)
@@ -89,12 +89,12 @@ markers_res01 <- markers_res01 %>%
 head(markers_res01)
 ```
 
-```{r save-markers1, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+```{r save-markers1, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
 saveRDS(markers_res01, file.path(results_path, "bone_markers_res01raw.rds"))
 write.csv(markers_res01, file.path(results_path, "bone_markers_res01raw.csv"), row.names = FALSE)
 ```
 
-```{r filter_markers, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+```{r filter_markers, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
 markers_res01 <- markers_res01 %>%
   filter(!grepl("Rik", gene, ignore.case = TRUE),
          !grepl("^Gm", gene))
@@ -108,13 +108,9 @@ markers_res01 <- markers_res01 %>%
   ungroup()
 ```
 
-```{r save_markers_filtrati, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+```{r save_markers_filtrati, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
 saveRDS(markers_res01, file.path(results_path, "bone_markers_filtrati.rds"))
 write.csv(markers_res01, file.path(results_path, "bone_markers_filtrati.csv"), row.names = FALSE)
-```
-
-```{r load, echo=FALSE, eval=TRUE}
-markers_res01 <- readRDS(file.path(results_path, "bone_markers_filtrati.rds"))
 ```
 
 ## Identificazione dei marker cellulari
@@ -149,7 +145,7 @@ p_dot_top2
 
 Al termine della **Fase 3**, l’oggetto (*bone_multi*) è stato salvato in formato *RDS* come `bone_multi_postclustering.rds` e utilizzato come input per le analisi successive. Inoltre, la lista dei *marker cellulari* è stata esportata in formato *CSV/RDS*.
 
-```{r top30, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+```{r top30, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
 markers_top30 <- markers_res01 %>%
   distinct(cluster, gene, .keep_all = TRUE) %>% 
   group_by(cluster) %>%
