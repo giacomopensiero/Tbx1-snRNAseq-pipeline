@@ -1,0 +1,229 @@
+---
+title: "Fase 4.5.3: Analisi di co-espressione genica — Cluster 18"
+author: "Giacomo Pensiero"
+date: "2025-11-27"
+output: html_document
+---
+In questo script viene eseguita una parte della Fase 4 dell’analisi, dedicata alla costruzione della rete di *co-espressione genica* *nel cluster 18*. Viene caricato l’oggetto preprocessato per questa analisi, *bone_multi*, e viene poi estratto il sottoinsieme di nuclei appartenenti al cluster 18.
+L’analisi comprende: generazione dei *metacell*, selezione del *soft-power* e costruzione della rete, identificazione dei moduli e calcolo degli *eigengene*, stima della connettività e identificazione degli *hub genes*. L’attività dei moduli viene quantificata tramite *module score* (UCell) e confrontata tra *WT* e *MUT* per individuare i moduli che variano significativamente **nel cluster 18**.
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r librerie, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(Seurat)
+library(hdWGCNA)
+library(WGCNA)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+set.seed(1234)
+enableWGCNAThreads(nThreads = 8)
+```
+
+```{r setup2, echo=TRUE, message=FALSE, warning=FALSE}
+base_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1/Analisi_Giacomo"
+hdwgcna_path <- file.path(base_path, "intermediate/hdwgcna/cluster_18")
+results_hdwgcna_path <- file.path(base_path, "results/hdwgcna/cluster_18")
+bone_multi_path<- file.path(base_path, "intermediate/hdwgcna/preprocessing")
+bone_multi <- readRDS(file.path(bone_multi_path, "bone_multi_preprocessed.rds"))
+```
+
+## Configurazione hdWGCNA e generazione dei metacell
+Configurazione dell’analisi di co-espressione **nel cluster 18**, con creazione dei *metacell* e normalizzazione dei dati, per la costruzione della rete e l’identificazione dei moduli di co-espressione.
+
+```{r metacells, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+DefaultAssay(bone_multi) <- "RNA"
+bone_multi <- JoinLayers(bone_multi, assay = "RNA")   
+cluster_18 <- subset(bone_multi, clusters_res_0_10 == "18")
+
+cluster_18  <- SetupForWGCNA(
+  seurat_obj  = cluster_18 ,
+  gene_select = "fraction",  
+  fraction    = 0.05,        
+  wgcna_name  = "WT")
+
+cluster_18  <- MetacellsByGroups(
+  seurat_obj  = cluster_18 ,
+  group.by =  c("condition"),  
+  reduction   = "integrated.cca",                     
+  k           = 20,
+  max_shared = 5,
+  min_cells    = 30,
+  ident.group = "condition")
+
+cluster_18  <- NormalizeMetacells(cluster_18)
+```
+
+## Costruzione della rete e selezione di soft-power
+Viene costruita la matrice di espressione per il cluster 18 e vengono testati diversi valori di *soft-power*; i grafici sono utilizzati per selezionare un valore adeguato in base al criterio di approssimazione alla topologia *scale-free* e alla connettività media.
+
+```{r set, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+cluster_18 <- SetDatExpr(
+  seurat_obj    = cluster_18,
+  group.by      = "condition",
+  group_name    = "WT",
+  assay         = "RNA",
+  layer         = "data",
+  use_metacells = TRUE,
+  wgcna_name    = "WT")
+
+cluster_18 <- TestSoftPowers(
+  seurat_obj  = cluster_18,
+  wgcna_name  = "WT",
+  networkType = "signed"
+  )
+plot_list <- PlotSoftPowers(cluster_18, wgcna_name = "WT")
+wrap_plots(plot_list, ncol = 2)
+```
+
+## Rete di co-espressione e moduli
+La rete di co-espressione nel cluster 8 è stata costruita utilizzando un valore di *soft-power* pari a 20. Il dendrogramma risultante consente di visualizzare il raggruppamento dei geni e l’assegnazione ai diversi moduli di co-espressione.
+
+```{r step3, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+cluster_18 <- ConstructNetwork(
+  seurat_obj    = cluster_18,
+  wgcna_name    = "WT",
+  networkType   = "signed",
+  soft_power    = 20,
+  deepSplit = 3,
+  detectCutHeight = 0.995,
+  minModuleSize = 50,
+  mergeCutHeight = 0.30,
+  tom_outdir    = "TOM",
+  tom_name      = "TOM_cluster18_WT",
+  overwrite_tom = TRUE
+)
+
+PlotDendrogram(
+  seurat_obj = cluster_18,
+  wgcna_name = "WT",
+  main       = "hdWGCNA Dendrogram - cluster 18 (WT)")
+
+mods <- GetModules(
+  seurat_obj = cluster_18,
+  wgcna_name = "WT")
+table(mods$module)
+mods[rownames(mods) == "Tbx1", ]
+```
+
+## Calcolo e visualizzazione degli eigengene dei moduli
+Gli *eigengene* dei moduli rappresentano un profilo riassuntivo dell’espressione di ciascun modulo, utile per valutare e visualizzare l’attività dei moduli nel seguente cluster.
+
+```{r step4, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, results='hide'}
+cluster_18 <- ModuleEigengenes(
+  seurat_obj    = cluster_18,
+  wgcna_name    = "WT")
+
+MEs_WT <- GetMEs(
+  seurat_obj = cluster_18,
+  wgcna_name = "WT",
+  harmonized = FALSE)
+```
+
+## Analisi della connettività dei moduli
+Viene calcolata la connettività intramodulare per identificare i geni maggiormente connessi (*hub genes*) all’interno di ciascun modulo.
+
+```{r connectivity, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, results='hide'}
+cluster_18 <- ModuleConnectivity(
+  seurat_obj  = cluster_18,
+  wgcna_name  = "WT",
+  group.by    = "condition",
+  group_name  = "WT")
+
+cluster_18 <- ResetModuleNames(
+  seurat_obj = cluster_18,
+  wgcna_name = "WT",
+  new_name   = "C18__M")
+```
+
+## Identificazione degli *hub genes*
+Vengono estratti i moduli (escludendo il modulo "grey") e identificati gli *hub genes*, ovvero i geni con maggiore connettività intramodulare e quindi più centrali all’interno di ciascun modulo nel cluster 18.
+
+```{r hub, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+modules_WT <- GetModules(
+  seurat_obj = cluster_18,
+  wgcna_name = "WT"
+) %>% 
+  subset(module != "grey")
+
+hub_WT <- GetHubGenes(
+  seurat_obj = cluster_18,
+  wgcna_name = "WT",
+  n_hubs     = 30)
+```
+
+## Calcolo degli score dei moduli
+Gli score dei moduli sono stati calcolati utilizzando i geni *hub* tramite il metodo UCell. Gli score ottenuti forniscono una misura dell’attività dei moduli nelle singole cellule del cluster 18.
+
+```{r score, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+cluster_18 <- ModuleExprScore(
+  cluster_18,
+  wgcna_name = "WT",
+  n_genes    = 25,
+  method     = "UCell")
+scores_WT <- cluster_18@misc$WT$module_scores
+cluster_18 <- AddMetaData(cluster_18, scores_WT)
+```
+
+# Identificazione dei moduli differenzialmente espressi tra WT e MUT
+Confronto WT e MUT per individuare i moduli che cambiano in modo significativo tra le due condizioni.
+
+```{r DMEs, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, results='hide'}
+group_mut <- rownames(cluster_18@meta.data)[cluster_18$condition == "MUT"]
+group_wt  <- rownames(cluster_18@meta.data)[cluster_18$condition == "WT"]
+
+DMEs <- FindDMEs(
+    seurat_obj  = cluster_18,
+    barcodes1   = group_mut,
+    barcodes2   = group_wt,
+    features    = "ModuleScores",
+    test.use    = "wilcox",
+    wgcna_name  = "WT")
+```
+
+```{r tabella, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+colnames(DMEs)[colnames(DMEs) == "pct.1"] <- "pct_MUT"
+colnames(DMEs)[colnames(DMEs) == "pct.2"] <- "pct_WT"
+
+DMEs$direction <- ifelse(
+  DMEs$avg_log2FC > 0,  "up_in_MUT",
+  ifelse(DMEs$avg_log2FC < 0, "down_in_MUT", "no_change")
+)
+
+DMEs <- DMEs[, c(
+  "module",
+  "p_val",
+  "avg_log2FC",
+  "pct_WT",   
+  "pct_MUT",  
+  "p_val_adj",
+  "direction"
+)]
+
+rownames(DMEs) <- gsub("-", "_", rownames(DMEs))
+DMEs$module     <- gsub("-", "_", DMEs$module)
+```
+
+Al termine dell’analisi di co-espressione nel **cluster 18**, l’oggetto finale *cluster_18* è stato salvato in formato *RDS* come `C18_hdwgcna_WT_object.rds`. Sono stati inoltre salvati i risultati dei moduli differenzialmente espressi tra *WT* e *MUT* (`C18_DME_results.rds/.csv`), la lista degli *hub genes* (`C18_hub_genes_WT.rds/.csv`) e gli score dei moduli (`C18_module_scores_WT.rds/.csv`).
+
+```{r salvatagggio_finale, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+saveRDS(cluster_18, file = file.path(hdwgcna_path, "C18_hdwgcna_WT_object.rds"))
+
+saveRDS(DMEs, file = file.path(hdwgcna_path, "C18_DME_results.rds"))
+write.csv(DMEs, file = file.path(results_hdwgcna_path, "C18_DME_results.csv"), row.names = FALSE)
+
+
+saveRDS(hub_WT, file = file.path(hdwgcna_path, "C18_hub_genes_WT.rds"))
+write.csv(hub_WT, file = file.path(results_hdwgcna_path, "C18_hub_genes_WT.csv"), row.names = FALSE)
+
+
+saveRDS(scores_WT, file = file.path(hdwgcna_path, "C18_module_scores_WT.rds"))
+write.csv(scores_WT, file = file.path(results_hdwgcna_path, "C18_module_scores_WT.csv"), row.names = FALSE)
+```
+
+```{r session-info, echo=TRUE}
+sessionInfo()
+```
+
