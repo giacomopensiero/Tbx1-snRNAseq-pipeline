@@ -1,0 +1,167 @@
+---
+title: "Fase 4.3: Analisi espressione differenziale"
+author: "Giacomo Pensiero"
+date: "2025-10-22"
+output: html_document
+---
+
+In questo script viene eseguita una parte della **Fase 4** dell’analisi, dedicata all’identificazione dei geni differenzialmente espressi tra *WT* e *MUT*. L’analisi è condotta separatamente per ciascun cluster (risoluzione *0.10*) utilizzando *FindMarkers* (test di Wilcoxon) per confrontare *MUT* vs *WT* (min.pct = 0.01; logfc.threshold = 0). I risultati vengono poi filtrati rimuovendo geni predetti/non annotati (pattern *Gm* e *Rik*) e i DEGs significativi sono definiti applicando le soglie *p_val_adj* ≤ 0.01 e |*avg_log2FC*| ≥ 0.25, classificandoli come *up-regolati* o *down-regolati* in *MUT*. Infine, per i cluster di interesse, i risultati sono visualizzati mediante *volcano plot* ed è evidenziato *Tbx1*.
+
+```{r setup1, include=TRUE}
+knitr::opts_chunk$set()
+```
+
+```{r libreria, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(ggrepel)
+library(dplyr)
+set.seed(1234)
+```
+
+```{r path, echo=TRUE, message=FALSE, warning=FALSE}
+base_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1/Analisi_Giacomo"
+bone_multi_path <- file.path(base_path, "intermediate", "clustering")
+risultati_path  <- file.path(base_path, "results", "DE")
+salvataggi_path <- file.path(base_path, "intermediate", "DE")
+bone_multi <- readRDS(file.path(bone_multi_path, "bone_multi_postclustering.rds"))
+```
+
+
+```{r setup, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+DefaultAssay(bone_multi) <- "RNA"
+bone_multi <- JoinLayers(bone_multi, assay = "RNA")
+DefaultLayer(bone_multi[["RNA"]]) <- "data"
+bone_multi$condition <- factor(bone_multi$condition, levels = c("WT", "MUT"))
+Idents(bone_multi) <- "clusters_res_0_10"
+```
+
+## Differenza di espressione su tutti i cluster
+
+```{r DE, echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+tbx1_clusters <- levels(bone_multi) 
+DE_list <- vector("list", length(tbx1_clusters))
+names(DE_list) <- tbx1_clusters
+
+for (cl in tbx1_clusters) {
+  obj_cl <- subset(bone_multi, idents = cl)
+  Idents(obj_cl) <- "condition"
+
+
+ DE <- FindMarkers(
+    obj_cl,
+    ident.1 = "MUT",
+    ident.2 = "WT",
+    test.use = "wilcox",
+    min.pct = 0.01,
+    logfc.threshold = 0
+  )
+
+  DE$gene <- rownames(DE)
+  DE$cluster <- cl
+  DE_list[[cl]] <- DE
+}
+
+DE_cl_Tbx1 <- dplyr::bind_rows(DE_list)
+rownames(DE_cl_Tbx1) <- NULL
+head(DE_cl_Tbx1)
+```
+
+```{r filtro, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+DE_cluster <- DE_cl_Tbx1 %>%
+  filter(
+    !grepl("^Gm", gene, ignore.case = TRUE),
+    !grepl("Rik$", gene, ignore.case = TRUE)
+  )
+cat("Geni totali:", nrow(DE_cl_Tbx1), "\n")
+cat("Dopo filtro:", nrow(DE_cluster), "\n")
+```
+
+```{r salvataggio, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+saveRDS(DE_cluster, file.path(salvataggi_path, "DE_All_res0_10.rds"))
+write.csv(DE_cluster, file.path(risultati_path, "DE_All_res0_10.csv"), row.names = FALSE)
+saveRDS(bone_multi, file.path(salvataggi_path, "bone_multi_res0_10.rds"))
+``` 
+
+```{r classificazione, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+DE_all_final <- DE_cluster %>%
+  mutate(
+    direction = case_when(
+      avg_log2FC >=  0.25 & p_val_adj <= 0.01 ~ "Up-regulated in MUT",
+      avg_log2FC <= -0.25 & p_val_adj <= 0.01 ~ "Down-regulated in MUT",
+      TRUE ~ "NS"
+    )
+  )
+DE_all_final_filt <- DE_all_final %>%
+  dplyr::filter(direction != "NS")
+
+cl_tbx1 <- c("0","1","6","8","12","13","16","18")
+
+DE_tbx1_sig <- DE_all_final %>%
+  dplyr::filter(cluster %in% cl_tbx1, direction != "NS")
+```
+
+```{r vulcano-plot, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=5}
+clusters <- c("0","1","6","8","12","13","16","18")
+
+for (cl in clusters) {
+  df_cluster <- DE_all_final %>%
+    dplyr::filter(cluster == cl) %>%
+    dplyr::mutate(
+      neglog10 = -log10(p_val_adj + 1e-300),
+      score    = abs(avg_log2FC) * neglog10,
+      delabel  = ifelse(gene == "Tbx1", "Tbx1", NA)   
+    )
+top_labels <- df_cluster %>%
+  dplyr::filter(direction != "NS") %>%
+  dplyr::group_by(direction) %>%
+  dplyr::arrange(dplyr::desc(score), p_val_adj, .by_group = TRUE) %>%
+  dplyr::slice_head(n = 20) %>%
+  dplyr::ungroup() %>%
+  dplyr::pull(gene)
+ is_tbx1 <- grepl("^tbx1$", df_cluster$gene, ignore.case = TRUE)
+  top_labels <- union(top_labels, df_cluster$gene[is_tbx1])
+df_cluster$delabel <- ifelse(df_cluster$gene %in% top_labels, df_cluster$gene, NA)
+p_volcano <- ggplot(df_cluster, aes(x = avg_log2FC, y = neglog10,
+                                 color = direction, label = delabel)) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = c(-0.25, 0.25), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.01), linetype = "dashed") +
+  scale_color_manual(values = c("Down-regulated in MUT"="#2C7FB8", "NS"="grey70", "Up-regulated in MUT"="#D7191C")) +
+  ggrepel::geom_text_repel(max.overlaps = 100, size = 3, box.padding = 0.3, point.padding = 0.2) +
+  labs(title = paste0("Volcano — MUT vs WT (cluster ", cl, ")"),
+       x = "avg log2FC",
+       y = "-log10(FDR)") +
+  theme_classic()
+print(p_volcano)
+}
+```
+
+Al termine di questa analisi, i DEGs significativi (in tutti i cluster) sono stati salvati in formato *RDS/CSV* come `DE_all_classified_res0_10_significativi`.
+
+```{r salvataggio2, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+saveRDS(DE_all_final, file.path(salvataggi_path, "DE_all_classified_res0_10.rds"))
+write.csv(DE_all_final, file.path(risultati_path, "DE_all_classified_res0_10.csv"), row.names = FALSE)
+
+saveRDS(DE_all_final_filt, file.path(salvataggi_path, "DE_all_classified_res0_10_significativi.rds"))
+write.csv(DE_all_final_filt, file.path(risultati_path, "DE_all_classified_res0_10_significativi.csv"), row.names = FALSE)
+
+saveRDS(DE_tbx1_sig, file.path(salvataggi_path, "DE_all_Tbx1clusters_significant_res0_10.rds"))
+write.csv(DE_tbx1_sig, file.path(risultati_path, "DE_all_Tbx1clusters_significant_res0_10.csv"), row.names = FALSE)
+```
+
+
+```{r session-info, echo=TRUE}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
