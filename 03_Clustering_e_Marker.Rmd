@@ -1,0 +1,163 @@
+---
+title: "Fase 3: Analisi (Clustering e Marker cellulari)"
+author: "Giacomo Pensiero"
+date: "2025-10-30"
+output: html_document
+---
+
+## Fase 3: Analisi
+
+In questo script viene eseguita la Fase 3 dell’analisi. Viene caricato l’oggetto post-integrazione ottenuto dalle Fasi 1–2, *bone_multi*, salvato in formato *RDS* come `bone_multi_postintegration.rds`. A partire da questo oggetto viene eseguito il *clustering* dei nuclei sulla base della riduzione integrata *integrated.cca* (*dims* *1–40*), testando diverse risoluzioni per valutare la granularità dei cluster. Le diverse risoluzioni vengono quindi visualizzate sulla proiezione *UMAP* calcolata nelle fasi precedenti. Infine, fissata la risoluzione di riferimento (*0.10*), vengono identificati i *marker cellulari* per ciascun cluster.
+
+```{r setup, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(Matrix)
+library(ggplot2)
+library(patchwork)
+set.seed(1234)
+```
+
+```{r path, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+base_path <- "C:/Users/giaco/OneDrive/Desktop/TBX1"
+intermediatecl_pre_path <- paste0(base_path, "/Analisi_Giacomo/intermediate/clustering/")
+intermediate_pre_path <- paste0(base_path, "/Analisi_Giacomo/intermediate/pre_integrazione/")
+results_path <- paste0(base_path, "/Analisi_Giacomo/results/clustering/")
+plots_path <- paste0(base_path,"/Analisi_Giacomo/grafici/clustering/")
+bone_multi <- readRDS(paste0(intermediate_pre_path, "bone_multi_postintegration.rds"))
+```
+
+## Clustering
+
+In questa sezione vengono testate diverse risoluzioni di *clustering* (0.08, 0.10, 0.20, 0.30) per valutare l’impatto sulla definizione e sul numero di cluster.
+
+```{r neighbors-clusters-after-integration, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+pcs_to_use <- 1:40
+bone_multi <- FindNeighbors(bone_multi, reduction = "integrated.cca", dims = pcs_to_use)
+resolutions <- c(0.08, 0.1, 0.2, 0.3)
+for (r in resolutions) {
+  cname <- paste0("clusters_res_", gsub("\\.", "_", sprintf("%.2f", r)))
+  bone_multi <- FindClusters(bone_multi, resolution = r, cluster.name = cname, verbose = FALSE)
+}
+```
+
+```{r save_cl, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+saveRDS(bone_multi, file.path(intermediatecl_pre_path, "bone_multi_postclustering.rds"))
+```
+
+```{r table_cluster, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+for (r in resolutions) {
+  cname <- paste0("clusters_res_", gsub("\\.", "_", sprintf("%.2f", r)))
+  cat("\n## Numero di cellule per cluster – resolution =", r, "\n")
+  print(table(bone_multi[[cname]][, 1]))
+}
+```
+
+```{r dimplot, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+for (r in resolutions) {
+  cname <- paste0("clusters_res_", gsub("\\.", "_", sprintf("%.2f", r)))
+  p <- DimPlot(
+    bone_multi,
+    reduction = "umap",
+    group.by = cname,
+    pt.size = 0.1,
+    label = TRUE
+  ) + 
+    ggtitle(paste("Risoluzione - ", r)) +
+    xlab("UMAP_1") + ylab("UMAP_2")
+  
+  print(p)
+}
+```
+
+```{r find-marker-step1, echo=TRUE, message=FALSE, eval=TRUE, warning=FALSE}
+DefaultAssay(bone_multi) <- "RNA"
+Idents(bone_multi) <- bone_multi$clusters_res_0_10
+bone_multi <- JoinLayers(bone_multi)
+markers_res01 <- FindAllMarkers(
+  bone_multi,
+  only.pos = TRUE,
+  min.pct = 0.1,
+  logfc.threshold = 0.25,
+  test.use = "wilcox"
+)
+markers_res01 <- markers_res01 %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), .by_group = TRUE) %>%
+  ungroup()
+head(markers_res01)
+```
+
+```{r save-markers1, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+saveRDS(markers_res01, file.path(results_path, "bone_markers_res01raw.rds"))
+write.csv(markers_res01, file.path(results_path, "bone_markers_res01raw.csv"), row.names = FALSE)
+```
+
+```{r filter_markers, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+markers_res01 <- markers_res01 %>%
+  filter(!grepl("Rik", gene, ignore.case = TRUE),
+         !grepl("^Gm", gene))
+markers_res01 <- markers_res01 %>%
+  filter(
+    p_val_adj < 0.01,     
+    avg_log2FC >= 0.25   
+  ) %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), p_val_adj, .by_group = TRUE) %>%
+  ungroup()
+```
+
+```{r save_markers_filtrati, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+saveRDS(markers_res01, file.path(results_path, "bone_markers_filtrati.rds"))
+write.csv(markers_res01, file.path(results_path, "bone_markers_filtrati.csv"), row.names = FALSE)
+```
+
+## Identificazione dei marker cellulari
+
+Dopo il *clustering* (risoluzione *0.10*), sono stati identificati i *marker cellulari* per ciascun cluster
+
+```{r dotplot-top2, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+DefaultAssay(bone_multi) <- "RNA"
+Idents(bone_multi) <- bone_multi$clusters_res_0_10
+top2_markers <- markers_res01 %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC), p_val_adj, .by_group = TRUE) %>%
+  slice_head(n = 2) %>%
+  ungroup()
+
+top2_summary <- top2_markers %>%
+  group_by(cluster) %>%
+  summarise(Marker1 = gene[1], Marker2 = gene[2], .groups = "drop")
+
+genes_top2 <- top2_markers %>%
+  arrange(as.integer(cluster), desc(avg_log2FC)) %>%
+  pull(gene) %>%
+  unique()
+
+Idents(bone_multi) <- bone_multi$clusters_res_0_10
+p_dot_top2 <- DotPlot(bone_multi, features = genes_top2,dot.scale = 7) +
+  RotatedAxis() +
+  ggtitle("Top 2 marcatori per cluster")+
+  labs(x = "Gene names", y = "Louvain Clusters")
+p_dot_top2
+```
+
+Al termine della **Fase 3**, l’oggetto (*bone_multi*) è stato salvato in formato *RDS* come `bone_multi_postclustering.rds` e utilizzato come input per le analisi successive. Inoltre, la lista dei *marker cellulari* è stata esportata in formato *CSV/RDS*.
+
+```{r top30, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+markers_top30 <- markers_res01 %>%
+  distinct(cluster, gene, .keep_all = TRUE) %>% 
+  group_by(cluster) %>%
+  arrange(p_val_adj, desc(avg_log2FC), .by_group = TRUE) %>%
+  slice_head(n = 30) %>%
+  ungroup() 
+write.csv(markers_top30, file.path(results_path, "bone_markers_top30_per_cluster.csv"), row.names = FALSE)
+saveRDS(markers_top30, file.path(results_path, "bone_markers_top30_per_cluster.rds"))
+saveRDS(bone_multi, file.path(intermediatecl_pre_path, "bone_multi_postmarkers.rds"))
+```
+
+```{r session-info, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
+
