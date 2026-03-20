@@ -16,5 +16,5 @@ Questo progetto riguarda la ri-analisi di dati di single-nucleus RNA sequencing 
 I dati utilizzati in questo progetto derivano dal dataset pubblico **GSE254044**, disponibile nel database **NCBI Gene Expression Omnibus (GEO)**:  
 [GSE254044 – Tbx1 haploinsufficiency induces bone-to-cerebellar deformity in 22q11.2 deletion syndrome](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE254044)
 
-## Oggetto Seurat della rianalisi
+## Oggetto Seurat della ri-analisi
 L’oggetto Seurat prodotto dalla ri-analisi è disponibile su Zenodo al seguente DOI: [https://doi.org/10.5281/zenodo.19128666](https://doi.org/10.5281/zenodo.19128666)
